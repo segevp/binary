@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weighted Grade Optimizer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        'primary': '#4f46e5',
+                        'primary-dark': '#4338ca',
+                        'success': '#10b981',
+                        'danger': '#ef4444',
+                        'surface': '#f9fafb',
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Firebase SDK Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Expose global variables and functions for use in the script section
+        window.firebase = {
+            initializeApp,
+            getAuth,
+            signInAnonymously,
+            signInWithCustomToken,
+            onAuthStateChanged,
+            getFirestore,
+            doc,
+            setDoc,
+            onSnapshot,
+            collection,
+        };
+    </script>
+    <style>
+        .grade-input {
+            appearance: none;
+            -moz-appearance: textfield;
+        }
+        .grade-input::-webkit-outer-spin-button,
+        .grade-input::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        /* Custom scrollbar for grade table */
+        #gradeTableBody::-webkit-scrollbar {
+            width: 8px;
+        }
+        #gradeTableBody::-webkit-scrollbar-thumb {
+            background: #d1d5db;
+            border-radius: 4px;
+        }
+        #gradeTableBody::-webkit-scrollbar-track {
+            background: #f3f4f6;
+        }
+        /* Ensure input fields have better touch target size on mobile */
+        input[type="text"], input[type="number"] {
+            min-height: 44px; /* Recommended touch target size */
+        }
+        .toggle-switch {
+            width: 38px;
+            height: 22px;
+            border-radius: 9999px;
+            position: relative;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .toggle-switch-inner {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 18px;
+            height: 18px;
+            border-radius: 9999px;
+            background-color: white;
+            transition: transform 0.2s;
+        }
+        .toggle-switch-checked {
+            background-color: #10b981; /* success color */
+        }
+        .toggle-switch-checked .toggle-switch-inner {
+            transform: translateX(16px);
+        }
+    </style>
+</head>
+<body class="bg-surface text-gray-800 font-sans p-4 min-h-screen">
+
+    <div id="loadingScreen" class="fixed inset-0 bg-surface flex items-center justify-center z-50">
+        <div class="flex flex-col items-center">
+            <svg class="animate-spin h-8 w-8 text-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <p class="mt-3 text-sm font-medium text-gray-600">Loading Grades...</p>
+        </div>
+    </div>
+
+    <main class="max-w-4xl mx-auto py-4 sm:py-8">
+        <h1 class="text-2xl sm:text-3xl font-extrabold text-gray-900 mb-4 text-center">
+            Weighted Grade Optimizer
+        </h1>
+        <p class="text-center text-xs sm:text-sm text-gray-500 mb-6 sm:mb-8">
+            Identify the optimal number of grades to remove to maximize your weighted average.
+            (User ID: <span id="userIdDisplay" class="font-mono text-xs bg-gray-200 px-2 py-0.5 rounded">...</span>)
+        </p>
+
+        <div class="grid md:grid-cols-2 gap-6 md:gap-8">
+            <!-- Grade Input Card -->
+            <div class="bg-white p-4 sm:p-6 shadow-xl rounded-xl border border-gray-100 h-full flex flex-col">
+                <h2 class="text-lg sm:text-xl font-semibold mb-4 text-primary-dark">Your Assignments</h2>
+
+                <!-- New Grade Input Form - Enhanced for Mobile Stacking -->
+                <div class="grid grid-cols-4 gap-2 mb-4">
+                    <input type="text" id="newGradeName" placeholder="Name" class="p-2 border border-gray-300 rounded-lg col-span-4 sm:col-span-1 focus:ring-primary focus:border-primary">
+                    <input type="number" id="newGradeScore" placeholder="Score" min="0" max="100" class="p-2 border border-gray-300 rounded-lg col-span-2 sm:col-span-1 grade-input focus:ring-primary focus:border-primary">
+                    <input type="number" id="newGradeWeight" placeholder="Points" min="0" step="1" class="p-2 border border-gray-300 rounded-lg col-span-2 sm:col-span-1 grade-input focus:ring-primary focus:border-primary">
+                    <button onclick="addGradeFromInput()" class="bg-primary hover:bg-primary-dark text-white font-medium py-2 px-2 sm:px-4 rounded-lg transition duration-150 shadow-md col-span-4 sm:col-span-1">
+                        Add Grade
+                    </button>
+                </div>
+
+                <!-- Grade List Table -->
+                <div class="overflow-y-auto max-h-72 border border-gray-200 rounded-lg flex-grow">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50 sticky top-0">
+                            <tr>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Score</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Points</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Mandatory</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Delete</th>
+                            </tr>
+                        </thead>
+                        <tbody id="gradeTableBody" class="bg-white divide-y divide-gray-200">
+                            <!-- Grades will be populated here -->
+                            <tr><td colspan="5" class="text-center p-4 text-gray-400 text-sm">Add some grades above to begin.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- NEW: Number of Grades to Exclude Input -->
+                <div class="mt-4 mb-4">
+                    <label for="numRemovals" class="block text-sm font-medium text-gray-700 mb-1">
+                        Number of Grades to Exclude (N)
+                    </label>
+                    <input type="number" id="numRemovals" value="3" min="1" max="10"
+                           class="w-full p-2 border border-gray-300 rounded-lg grade-input focus:ring-primary focus:border-primary">
+                </div>
+
+                <button id="calculateBtn" onclick="runOptimization()"
+                        class="w-full bg-success hover:bg-green-600 text-white font-bold py-3 px-4 rounded-xl transition duration-150 shadow-lg disabled:opacity-50"
+                        disabled>
+                    Calculate Best Removals
+                </button>
+                <p id="gradeCountMessage" class="mt-2 text-center text-xs text-danger hidden">
+                    Please enter more than N grades.
+                </p>
+                <p id="removableCountMessage" class="mt-2 text-center text-xs text-danger hidden">
+                    You must have at least N removable grades.
+                </p>
+            </div>
+
+            <!-- Results Card -->
+            <div class="bg-white p-4 sm:p-6 shadow-xl rounded-xl border border-gray-100 h-full">
+                <h2 class="text-lg sm:text-xl font-semibold mb-4 text-primary-dark">Results</h2>
+
+                <div id="initialAvgDisplay" class="bg-gray-50 p-4 rounded-lg mb-4 border border-gray-200">
+                    <p class="text-sm text-gray-600 font-medium">Initial Weighted Average</p>
+                    <p id="initialAvgValue" class="text-3xl font-extrabold text-gray-900 mt-1">--.--</p>
+                </div>
+
+                <div id="optimizedAvgDisplay" class="bg-indigo-50 p-4 rounded-lg mb-6 border-l-4 border-primary">
+                    <p class="text-sm text-primary font-medium" id="optimizedAvgLabel">Optimized Average (Removing N Grades)</p>
+                    <p id="optimizedAvgValue" class="text-3xl font-extrabold text-primary mt-1">--.--</p>
+                    <p id="averageGain" class="text-xs mt-2 font-semibold hidden">
+                        Gain: +0.00 points
+                    </p>
+                </div>
+
+                <h3 class="text-md sm:text-lg font-medium text-gray-700 mb-3">Grades to Remove:</h3>
+                <ul id="removedGradesList" class="space-y-2 text-sm text-gray-600 list-none pl-0">
+                    <li class="p-2 bg-gray-100 rounded-lg text-gray-400">Run calculation to see results.</li>
+                </ul>
+
+                <div id="errorBox" class="p-3 bg-danger/10 text-danger text-sm rounded-lg mt-4 hidden"></div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // --- Firebase & State Management Setup ---
+        let app;
+        let db;
+        let auth;
+        let userId = null;
+        let grades = [];
+        const DB_COLLECTION = 'grades';
+        const DB_DOC_ID = 'userGrades';
+        // NUM_TO_REMOVE is now dynamic and read from the input field
+
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('loadingScreen').classList.remove('hidden');
+            setupFirebase();
+        });
+
+        async function setupFirebase() {
+            try {
+                // Global variables from Canvas environment
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+                const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+                if (!firebaseConfig.apiKey) {
+                    console.error("Firebase config not available. Running in local mode.");
+                    document.getElementById('loadingScreen').classList.add('hidden');
+                    updateUI();
+                    return;
+                }
+
+                // 1. Initialize Firebase
+                app = window.firebase.initializeApp(firebaseConfig);
+                auth = window.firebase.getAuth(app);
+                db = window.firebase.getFirestore(app);
+
+                // 2. Authenticate
+                if (initialAuthToken) {
+                    await window.firebase.signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await window.firebase.signInAnonymously(auth);
+                }
+
+                // 3. Listen for Auth State Change and load data
+                window.firebase.onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('userIdDisplay').textContent = userId;
+                        // 4. Set up Real-time listener for grades
+                        const userGradesPath = `/artifacts/${appId}/users/${userId}/${DB_COLLECTION}`;
+                        const userGradesDocRef = window.firebase.doc(window.firebase.collection(db, userGradesPath), DB_DOC_ID);
+
+                        window.firebase.onSnapshot(userGradesDocRef, (docSnap) => {
+                            if (docSnap.exists() && docSnap.data().grades) {
+                                grades = docSnap.data().grades;
+                            } else {
+                                grades = []; // No grades saved yet
+                            }
+                            updateUI();
+                            document.getElementById('loadingScreen').classList.add('hidden');
+                        }, (error) => {
+                            console.error("Error listening to grades data:", error);
+                            document.getElementById('errorBox').textContent = "Failed to load grades data.";
+                            document.getElementById('errorBox').classList.remove('hidden');
+                            document.getElementById('loadingScreen').classList.add('hidden');
+                        });
+                    } else {
+                        userId = crypto.randomUUID(); // Fallback identifier
+                        document.getElementById('userIdDisplay').textContent = userId + " (Anon)";
+                        updateUI();
+                        document.getElementById('loadingScreen').classList.add('hidden');
+                    }
+                });
+
+            } catch (error) {
+                console.error("Firebase setup failed:", error);
+                document.getElementById('errorBox').textContent = `Firebase setup failed: ${error.message}`;
+                document.getElementById('errorBox').classList.remove('hidden');
+                document.getElementById('loadingScreen').classList.add('hidden');
+            }
+        }
+
+        /**
+         * Saves the current 'grades' array to Firestore.
+         */
+        async function saveGrades() {
+            if (!db || !userId) {
+                console.warn("Database or User ID not ready. Skipping save.");
+                return;
+            }
+            try {
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                const userGradesPath = `/artifacts/${appId}/users/${userId}/${DB_COLLECTION}`;
+                const userGradesDocRef = window.firebase.doc(window.firebase.collection(db, userGradesPath), DB_DOC_ID);
+
+                await window.firebase.setDoc(userGradesDocRef, { grades: grades }, { merge: false });
+            } catch (error) {
+                console.error("Failed to save grades:", error);
+                document.getElementById('errorBox').textContent = "Failed to save grades. Check console for details.";
+                document.getElementById('errorBox').classList.remove('hidden');
+            }
+        }
+
+        // --- Combination Generator ---
+
+        /**
+         * Generates all combinations of indices of size k from an array.
+         * Used to iterate over all possible removal sets.
+         * @param {Array<number>} arr - The array of indices to choose from.
+         * @param {number} k - The size of the combination (number of removals).
+         * @returns {Array<Array<number>>} A list of combinations (arrays of indices).
+         */
+        function getCombinations(arr, k) {
+            const result = [];
+
+            function generate(start, currentCombination) {
+                if (currentCombination.length === k) {
+                    result.push([...currentCombination]);
+                    return;
+                }
+
+                for (let i = start; i < arr.length; i++) {
+                    currentCombination.push(arr[i]);
+                    generate(i + 1, currentCombination);
+                    currentCombination.pop();
+                }
+            }
+
+            // We only need combinations of indices (0 to N-1)
+            const indices = Array.from({ length: arr.length }, (_, i) => i);
+            generate(0, []);
+            return result;
+        }
+
+        // --- Core Logic Functions (Weighted Average uses Points) ---
+
+        /**
+         * Calculates the weighted average for a list of grades using points as weight.
+         */
+        function calculateWeightedAverage(gradesList) {
+            const totalValue = gradesList.reduce((acc, item) => acc + item.grade * item.weight, 0);
+            const totalWeight = gradesList.reduce((acc, item) => acc + item.weight, 0);
+
+            if (totalWeight === 0) {
+                return 0.0;
+            }
+            return totalValue / totalWeight;
+        }
+
+        /**
+         * Finds the 'n' grades whose removal results in the highest remaining weighted average.
+         * Now uses a generic combination generator to support dynamic nRemovals.
+         */
+        function findBestRemovals(gradesData, nRemovals) {
+
+            const removableCandidates = gradesData.filter(g => !g.isUntouched);
+            const mandatoryGrades = gradesData.filter(g => g.isUntouched);
+
+            const totalRemovable = removableCandidates.length;
+
+            if (totalRemovable < nRemovals) {
+                return { bestRemovals: [], maxAvg: calculateWeightedAverage(gradesData) };
+            }
+
+            let bestAvg = -1.0;
+            let bestRemovals = [];
+
+            const allRemovableIndices = Array.from({ length: totalRemovable }, (_, i) => i);
+            const combinationsOfIndices = getCombinations(allRemovableIndices, nRemovals);
+
+            for (const removalIndices of combinationsOfIndices) {
+
+                const remainingGradesForCalc = [];
+
+                // Add mandatory grades (they always remain)
+                remainingGradesForCalc.push(...mandatoryGrades.map(item => ({ grade: item.grade, weight: item.weight })));
+
+                // Determine which removable candidates remain
+                const indicesToKeep = new Set(allRemovableIndices.filter(i => !removalIndices.includes(i)));
+                removableCandidates.forEach((item, index) => {
+                    if (indicesToKeep.has(index)) {
+                        remainingGradesForCalc.push({ grade: item.grade, weight: item.weight });
+                    }
+                });
+
+                const currentAvg = calculateWeightedAverage(remainingGradesForCalc);
+
+                if (currentAvg > bestAvg) {
+                    bestAvg = currentAvg;
+                    // Map the combination indices back to the actual grade objects
+                    bestRemovals = removalIndices.map(index => removableCandidates[index]);
+                }
+            }
+
+            return {
+                bestRemovals: bestRemovals.map(r => ({ name: r.name, grade: r.grade, weight: r.weight })),
+                maxAvg: bestAvg
+            };
+        }
+
+        // --- UI and Data Manipulation Functions ---
+
+        /**
+         * Adds a grade from the input fields to the grades array and saves it.
+         */
+        function addGradeFromInput() {
+            const nameInput = document.getElementById('newGradeName');
+            const scoreInput = document.getElementById('newGradeScore');
+            const weightInput = document.getElementById('newGradeWeight');
+
+            const name = nameInput.value.trim();
+            const grade = parseFloat(scoreInput.value);
+            const weight = parseFloat(weightInput.value);
+
+            if (!name || isNaN(grade) || isNaN(weight) || grade < 0 || grade > 100 || weight < 0) {
+                alertUser("Please enter valid Assignment Name, Score (0-100), and Points (>=0).", 'danger');
+                return;
+            }
+
+            grades.push({ name, grade, weight, isUntouched: false });
+            nameInput.value = '';
+            scoreInput.value = '';
+            weightInput.value = '';
+
+            updateUI();
+            saveGrades();
+        }
+
+        /**
+         * Removes a grade at a specific index.
+         */
+        function removeGrade(index) {
+            grades.splice(index, 1);
+            updateUI();
+            saveGrades();
+        }
+
+        /**
+         * Toggles the mandatory/untouched status of a grade at a specific index.
+         */
+        function toggleMandatory(index) {
+            if (grades[index]) {
+                grades[index].isUntouched = !grades[index].isUntouched;
+                updateUI();
+                saveGrades();
+            }
+        }
+
+        /**
+         * Runs the optimization logic and updates the results section.
+         */
+        function runOptimization() {
+            document.getElementById('errorBox').classList.add('hidden');
+
+            const numRemovalsInput = document.getElementById('numRemovals');
+            const nRemovals = parseInt(numRemovalsInput.value);
+            const removableCandidates = grades.filter(g => !g.isUntouched);
+
+            if (isNaN(nRemovals) || nRemovals < 1) {
+                alertUser("Please enter a valid number of grades to remove (N >= 1).", 'danger');
+                return;
+            }
+
+            if (grades.length <= nRemovals) {
+                alertUser(`You must enter at least ${nRemovals + 1} total grades.`, 'danger');
+                document.getElementById('gradeCountMessage').classList.remove('hidden');
+                document.getElementById('removableCountMessage').classList.add('hidden');
+                return;
+            }
+
+            if (removableCandidates.length < nRemovals) {
+                alertUser(`You must have at least ${nRemovals} grades that are NOT mandatory.`, 'danger');
+                document.getElementById('gradeCountMessage').classList.add('hidden');
+                document.getElementById('removableCountMessage').classList.remove('hidden');
+                return;
+            }
+
+            document.getElementById('gradeCountMessage').classList.add('hidden');
+            document.getElementById('removableCountMessage').classList.add('hidden');
+
+            const initialGradesForCalc = grades.map(g => ({ grade: g.grade, weight: g.weight }));
+            const initialAvg = calculateWeightedAverage(initialGradesForCalc);
+
+            // Run the main optimization function
+            const { bestRemovals, maxAvg } = findBestRemovals(grades, nRemovals);
+
+            // Update UI with results
+            const initialAvgValueEl = document.getElementById('initialAvgValue');
+            const optimizedAvgValueEl = document.getElementById('optimizedAvgValue');
+            const removedGradesListEl = document.getElementById('removedGradesList');
+            const averageGainEl = document.getElementById('averageGain');
+
+            initialAvgValueEl.textContent = initialAvg.toFixed(2);
+            optimizedAvgValueEl.textContent = maxAvg.toFixed(2);
+            document.getElementById('optimizedAvgLabel').textContent = `Optimized Average (Removing ${nRemovals} Non-Mandatory)`;
+
+
+            // Calculate and display gain
+            const gain = maxAvg - initialAvg;
+
+            averageGainEl.classList.remove('hidden', 'text-success', 'text-danger', 'text-gray-500');
+            if (gain > 0.01) {
+                averageGainEl.textContent = `Gain: +${gain.toFixed(2)} points`;
+                averageGainEl.classList.add('text-success');
+            } else if (gain < -0.01) {
+                 averageGainEl.textContent = `Loss: ${gain.toFixed(2)} points`;
+                 averageGainEl.classList.add('text-danger');
+            } else {
+                averageGainEl.textContent = `No significant change.`;
+                averageGainEl.classList.add('text-gray-500');
+            }
+
+            removedGradesListEl.innerHTML = '';
+            bestRemovals.forEach(item => {
+                const li = document.createElement('li');
+                li.className = 'p-2 bg-red-50 rounded-lg flex justify-between items-center border border-red-200';
+                li.innerHTML = `
+                    <span class="font-semibold text-danger">${item.name}</span>
+                    <span class="text-xs text-danger/80">Score: ${item.grade.toFixed(0)}, Points: ${item.weight.toFixed(0)}</span>
+                `;
+                removedGradesListEl.appendChild(li);
+            });
+
+            if (bestRemovals.length === 0) {
+                 removedGradesListEl.innerHTML = '<li class="p-2 bg-gray-100 rounded-lg text-gray-400">Calculation completed. No grades were identified for removal.</li>';
+            }
+        }
+
+        /**
+         * Updates the list of grades displayed in the table and checks calculation eligibility.
+         */
+        function updateUI() {
+            const tableBody = document.getElementById('gradeTableBody');
+            tableBody.innerHTML = '';
+            const removableCandidates = grades.filter(g => !g.isUntouched);
+            const numRemovalsInput = document.getElementById('numRemovals');
+            const nRemovals = parseInt(numRemovalsInput.value);
+
+            if (grades.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="5" class="text-center p-4 text-gray-400 text-sm">Add some grades above to begin.</td></tr>';
+                document.getElementById('calculateBtn').disabled = true;
+                document.getElementById('gradeCountMessage').classList.add('hidden');
+                document.getElementById('removableCountMessage').classList.add('hidden');
+            } else {
+                grades.forEach((item, index) => {
+                    const isMandatory = item.isUntouched;
+                    const row = tableBody.insertRow();
+                    row.className = 'hover:bg-gray-50';
+
+                    const toggleClass = isMandatory ? 'bg-success toggle-switch-checked' : 'bg-gray-300';
+                    const mandatoryHTML = `
+                        <div onclick="toggleMandatory(${index})" class="toggle-switch ${toggleClass}">
+                            <div class="toggle-switch-inner"></div>
+                        </div>
+                    `;
+
+                    row.innerHTML = `
+                        <td class="px-3 py-2 whitespace-nowrap ${isMandatory ? 'font-semibold text-gray-700' : ''}">${item.name}</td>
+                        <td class="px-3 py-2 whitespace-nowrap font-medium">${item.grade.toFixed(0)}</td>
+                        <td class="px-3 py-2 whitespace-nowrap">${item.weight.toFixed(0)}</td>
+                        <td class="px-3 py-2 whitespace-nowrap">${mandatoryHTML}</td>
+                        <td class="px-3 py-2 whitespace-nowrap">
+                            <button onclick="removeGrade(${index})" class="text-danger hover:text-red-700 p-1 rounded-full hover:bg-red-100 transition">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 10-2 0v6a1 1 0 102 0V8z" clip-rule="evenodd" />
+                                </svg>
+                            </button>
+                        </td>
+                    `;
+                });
+
+                // Check if calculation is possible
+                const isCalculable = grades.length > nRemovals && removableCandidates.length >= nRemovals;
+                document.getElementById('calculateBtn').disabled = !isCalculable;
+
+                document.getElementById('gradeCountMessage').classList.toggle('hidden', grades.length > nRemovals);
+                document.getElementById('removableCountMessage').classList.toggle('hidden', removableCandidates.length >= nRemovals);
+            }
+
+            // Clear results when data changes
+            document.getElementById('initialAvgValue').textContent = '--.--';
+            document.getElementById('optimizedAvgValue').textContent = '--.--';
+            document.getElementById('averageGain').classList.add('hidden');
+            document.getElementById('optimizedAvgLabel').textContent = `Optimized Average (Removing ${nRemovals} Non-Mandatory)`;
+            document.getElementById('removedGradesList').innerHTML = '<li class="p-2 bg-gray-100 rounded-lg text-gray-400">Run calculation to see results.</li>';
+        }
+
+        /**
+         * Simple custom alert display (instead of browser alert()).
+         */
+        function alertUser(message, type) {
+            const errorBox = document.getElementById('errorBox');
+            errorBox.textContent = message;
+            errorBox.className = `p-3 bg-${type}/10 text-${type} text-sm rounded-lg mt-4`;
+            errorBox.classList.remove('hidden');
+            setTimeout(() => {
+                errorBox.classList.add('hidden');
+            }, 5000);
+        }
+    </script>
+</body>
+</html>
